@@ -2,7 +2,7 @@ using System.Globalization;
 using System.Windows;
 using System.Windows.Data;
 
-namespace Ribanense.Solucoes.App.Winget.Converters;
+namespace Ribanense.Solucoes.App.Chocolatey.Converters;
 
 public sealed class BoolToVisibilityConverter : IValueConverter
 {

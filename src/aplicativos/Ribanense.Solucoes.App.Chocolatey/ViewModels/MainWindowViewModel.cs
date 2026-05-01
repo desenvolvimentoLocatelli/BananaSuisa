@@ -1,14 +1,13 @@
 using System.Collections.ObjectModel;
 using System.Windows;
 using System.Windows.Input;
-using Ribanense.Solucoes.App.Winget.Services;
-using Ribanense.Solucoes.App.Winget.Services.Search;
-using Ribanense.Solucoes.App.Winget.Services.Sources;
+using Ribanense.Solucoes.App.Chocolatey.Services;
+using Ribanense.Solucoes.App.Chocolatey.Services.Sources;
 using Ribanense.Solucoes.PluginSDK.Logging;
 using Ribanense.Solucoes.UI;
 using Ribanense.Solucoes.UI.Mvvm;
 
-namespace Ribanense.Solucoes.App.Winget.ViewModels;
+namespace Ribanense.Solucoes.App.Chocolatey.ViewModels;
 
 public enum AppTab
 {
@@ -20,23 +19,24 @@ public enum AppTab
 
 public sealed class MainWindowViewModel : ObservableObject, IPackageRowHost
 {
-    private readonly IWingetInstallService _installer;
+    private readonly IChocolateyInstallService _installer;
     private readonly IAppJsonLog _log;
-    private readonly IWingetLocator _locator;
+    private readonly IChocolateyLocator _locator;
 
     public MainWindowViewModel(
-        ISearchEnhancer search,
-        IWingetListService list,
-        IWingetInstallService installer,
-        IWingetLocator locator,
-        IWingetSourceService sources,
+        IChocolateySearchService search,
+        IChocolateyPopularPackagesService popular,
+        IChocolateyListService list,
+        IChocolateyInstallService installer,
+        IChocolateyLocator locator,
+        IChocolateySourceService sources,
         IAppJsonLog log)
     {
         _installer = installer;
         _locator = locator;
         _log = log;
 
-        SearchTab = new SearchViewModel(search, this);
+        SearchTab = new SearchViewModel(search, popular, this);
         InstalledTab = new InstalledViewModel(list, this);
         SourcesTab = new SourcesViewModel(sources, log);
 
@@ -51,11 +51,6 @@ public sealed class MainWindowViewModel : ObservableObject, IPackageRowHost
     public SearchViewModel SearchTab { get; }
     public InstalledViewModel InstalledTab { get; }
     public SourcesViewModel SourcesTab { get; }
-
-    /// <summary>
-    /// Aba "Modulo" sera preenchida na Fase B do plano (diagnostico + reparo).
-    /// Por enquanto e um hook opcional injetavel via composition root.
-    /// </summary>
     public ModuleViewModel? ModuleTab { get; init; }
 
     public ObservableCollection<string> LogLines { get; } = new();
@@ -82,13 +77,13 @@ public sealed class MainWindowViewModel : ObservableObject, IPackageRowHost
     public bool IsSourcesActive => CurrentTab == AppTab.Sources;
     public bool IsModuleActive => CurrentTab == AppTab.Module;
 
-    public string ProductName => "Gestor WinGet";
+    public string ProductName => "Gestor Chocolatey";
 
-    private string _wingetStatus = "Verificando winget...";
-    public string WingetStatus
+    private string _chocolateyStatus = "Verificando choco...";
+    public string ChocolateyStatus
     {
-        get => _wingetStatus;
-        set => SetProperty(ref _wingetStatus, value);
+        get => _chocolateyStatus;
+        set => SetProperty(ref _chocolateyStatus, value);
     }
 
     public ICommand SelectSearchCommand { get; }
@@ -98,15 +93,23 @@ public sealed class MainWindowViewModel : ObservableObject, IPackageRowHost
     public ICommand ClearLogCommand { get; }
     public ICommand CopyLogCommand { get; }
 
-    public Task BootstrapAsync()
+    public async Task BootstrapAsync()
     {
         string? path = _locator.TryLocate();
-        WingetStatus = path is null
-            ? "winget.exe nao encontrado. Abra a aba Modulo para diagnosticar/reparar."
-            : $"winget: {path}";
+        ChocolateyStatus = path is null
+            ? "choco.exe nao encontrado. Abra a aba Modulo para diagnosticar."
+            : $"choco: {path}";
 
-        AppendLog($"Gestor WinGet iniciado. {WingetStatus}");
-        return path is null ? Task.CompletedTask : InstalledTab.RefreshAsync();
+        AppendLog($"Gestor Chocolatey iniciado. {ChocolateyStatus}");
+
+        Task popularTask = SearchTab.EnsurePopularSuggestionsAsync();
+        if (path is null)
+        {
+            await popularTask.ConfigureAwait(true);
+            return;
+        }
+
+        await Task.WhenAll(InstalledTab.RefreshAsync(), popularTask).ConfigureAwait(true);
     }
 
     private async Task OnTabActivatedAsync(AppTab tab)
@@ -147,7 +150,7 @@ public sealed class MainWindowViewModel : ObservableObject, IPackageRowHost
     private async Task RunOperationAsync(
         PackageRowViewModel row,
         string verb,
-        Func<string, Action<string>, CancellationToken, Task<Domain.WingetRunResult>> op,
+        Func<string, Action<string>, CancellationToken, Task<Domain.ChocolateyRunResult>> op,
         bool refreshInstalled)
     {
         row.IsBusy = true;
@@ -161,13 +164,13 @@ public sealed class MainWindowViewModel : ObservableObject, IPackageRowHost
             {
                 row.Status = $"{verb} concluido.";
                 AppendLog($"OK - {row.Id} ({verb.ToLowerInvariant()}).");
-                _log.Write(AppLogLevel.Information, "winget.op", $"{verb} OK: {row.Id}");
+                _log.Write(AppLogLevel.Information, "choco.op", $"{verb} OK: {row.Id}");
             }
             else
             {
                 row.Status = $"Falhou (codigo {result.ExitCode}).";
                 AppendLog($"FALHA (exit={result.ExitCode}) - {row.Id}.");
-                _log.Write(AppLogLevel.Warning, "winget.op", $"{verb} falhou: {row.Id} exit={result.ExitCode}");
+                _log.Write(AppLogLevel.Warning, "choco.op", $"{verb} falhou: {row.Id} exit={result.ExitCode}");
             }
 
             if (refreshInstalled)
@@ -179,7 +182,7 @@ public sealed class MainWindowViewModel : ObservableObject, IPackageRowHost
         {
             row.Status = $"Erro: {ex.Message}";
             AppendLog($"ERRO - {row.Id}: {ex.Message}");
-            _log.Write(AppLogLevel.Error, "winget.op.exception", $"{verb} {row.Id} lancou excecao.", ex);
+            _log.Write(AppLogLevel.Error, "choco.op.exception", $"{verb} {row.Id} lancou excecao.", ex);
         }
         finally
         {
